@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: diskwatch-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.asset }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            asset: diskwatch-macos-arm64
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            asset: diskwatch-linux-x86_64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            asset: diskwatch-linux-arm64
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: diskwatch-windows-x86_64.exe
+            extension: .exe
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install musl compiler tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+      - name: Build binary
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Name release asset
+        shell: bash
+        run: mv target/${{ matrix.target }}/release/diskwatch${{ matrix.extension }} ${{ matrix.asset }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish latest release
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Move tag and publish binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git push --force origin "$GITHUB_SHA:refs/tags/latest"
+          if gh release view latest >/dev/null 2>&1; then
+            gh release upload latest assets/* --clobber
+          else
+            gh release create latest assets/* --verify-tag --latest --title "Latest" \
+              --notes "Current diskwatch binaries for macOS, Linux, and Windows."
+          fi
